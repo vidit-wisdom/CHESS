@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import json
 from typing import Any
+import os
 
 from wisdom.experimental.CHESS.src.database_utils.execution import execute_sql
 
@@ -41,26 +42,29 @@ def load_stats(run_names: list[str], db_id: str | None = None) -> RunStats:
     error_examples: list[BirdExampleID] = []
 
     for run_name in run_names:
-        run_path = f"python/wisdom/experimental/CHESS/results/dev/CHESS_IR_SS_CG/dev/{run_name}/-statistics.json"
-        with open(run_path, "r") as f:
-            stats_dict = json.load(f)
-        ids_dict = stats_dict["ids"]["final_SQL"]
+        dev_path = "python/wisdom/experimental/CHESS/results/dev/CHESS_IR_SS_CG/dev/"
+        for folder in os.listdir(dev_path):
+            if folder.startswith(run_name):
+                run_path = os.path.join(dev_path, folder, "-statistics.json")
+                with open(run_path, "r") as f:
+                    stats_dict = json.load(f)
+                ids_dict = stats_dict["ids"]["final_SQL"]
 
-        correct_examples.extend([
-            BirdExampleID(id=id_list[1], db_id=id_list[0])
-            for id_list in ids_dict["correct"]
-            if id_list[0] == db_id or db_id is None
-        ])
-        incorrect_examples.extend([
-            BirdExampleID(id=id_list[1], db_id=id_list[0])
-            for id_list in ids_dict["incorrect"]
-            if id_list[0] == db_id or db_id is None
-        ])
-        error_examples.extend([
-            BirdExampleID(id=id_list[1], db_id=id_list[0])
-            for id_list in ids_dict["error"]
-            if id_list[0] == db_id or db_id is None
-        ])
+                correct_examples.extend([
+                    BirdExampleID(id=id_list[1], db_id=id_list[0])
+                    for id_list in ids_dict["correct"]
+                    if id_list[0] == db_id or db_id is None
+                ])
+                incorrect_examples.extend([
+                    BirdExampleID(id=id_list[1], db_id=id_list[0])
+                    for id_list in ids_dict["incorrect"]
+                    if id_list[0] == db_id or db_id is None
+                ])
+                error_examples.extend([
+                    BirdExampleID(id=id_list[1], db_id=id_list[0])
+                    for id_list in ids_dict["error"]
+                    if id_list[0] == db_id or db_id is None
+                ])
 
     return RunStats(
         correct_count=len(correct_examples),

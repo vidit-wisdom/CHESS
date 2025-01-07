@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Any, Dict
 
 from runner.logger import Logger
 from runner.database_manager import DatabaseManager
@@ -11,9 +11,10 @@ class ExecutionAccuracy(Tool):
     Tool for evaluating the predicted SQL queries against the ground truth SQL query.
     """
 
-    def __init__(self):
+    def __init__(self, result_directory: str | None = None):
         super().__init__()
 
+        self.result_directory = result_directory
         self.evaluation_results = None
 
     def _run(self, state: SystemState):
@@ -64,6 +65,18 @@ class ExecutionAccuracy(Tool):
             if evaluation_result["exec_res"] not in ["incorrect answer", "--"]:
                 final_result = evaluation_result
         self.evaluation_results["final_SQL"] = final_result
+
+    def _log_run(self, state: SystemState, run_status: Dict[str, Any]):
+        run_log = {"tool_name": self.tool_name}
+        if run_status["status"] == "success":
+            run_log.update(self._get_updates(state))
+        run_log.update(run_status)
+        state.execution_history.append(run_log)
+        Logger(
+            question_id=state.task.question_id,
+            db_id=state.task.db_id,
+            result_directory=self.result_directory,
+        ).dump_history_to_file(state.execution_history)
 
     def _log_sql_result(self, state: SystemState, SQL: str) -> Dict:
         """

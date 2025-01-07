@@ -1,4 +1,5 @@
 import asyncio
+import math
 import os
 import sys
 import json
@@ -12,6 +13,7 @@ from runner.logger import Logger
 from runner.task import Task
 from runner.database_manager import DatabaseManager
 from runner.statistics_manager import StatisticsManager
+from wisdom.models.zsheet.zsheet_store_interface import ZSheetStore
 from workflow.agents.evaluation import ExecutionAccuracy
 from workflow.sql_meta_info import SQLMetaInfo
 
@@ -42,17 +44,25 @@ import fcntl
 class RunManager:
     RESULT_ROOT_PATH = "results"
 
-    def __init__(self, args: Any):
+    def __init__(
+        self,
+        args: Any,
+        dataset: List[Dict[str, Any]],
+        nlp_engine: NLQueryProcessor,
+        zsheet_store: ZSheetStore,
+    ):
         self.args = args
-        self.result_directory = self.get_result_directory()
-        self.statistics_manager = StatisticsManager(self.result_directory)
-        self.tasks: List[Task] = []
-        self.total_number_of_tasks = 0
+        self.tasks = self.initialize_tasks(dataset)
+        self.total_number_of_tasks = len(self.tasks)
         self.processed_tasks = 0
 
-        self.wisdom_context = K8sWisdomStaticContext()
-        self.nlp_engine: NLQueryProcessor = NLQueryProcessor(self.wisdom_context)
-        self.zsheet_store = self.wisdom_context.zsheet_store()
+        self.result_directory = self.get_result_directory()
+        self.statistics_manager = StatisticsManager(self.result_directory)
+
+        _ = [self.update_final_predictions(task.question_id) for task in self.tasks]
+
+        self.nlp_engine = nlp_engine
+        self.zsheet_store = zsheet_store
         self.db_id_to_domain_id = {}
 
     def get_domain_id(self, db_id: str) -> str:
@@ -72,7 +82,12 @@ class RunManager:
         data_mode = self.args.data_mode
         setting_name = self.args.config["setting_name"]
         dataset_name = Path(self.args.data_path).stem
-        run_folder_name = str(self.args.run_start_time)
+
+        start_qid, end_qid = self.tasks[0].question_id, self.tasks[-1].question_id
+        run_folder_name = f"worker-{self.args.worker_id}_qids-{start_qid}-{end_qid}"
+        if self.args.directory_prefix:
+            run_folder_name = f"{self.args.directory_prefix}_{run_folder_name}"
+
         run_folder_path = (
             Path(self.RESULT_ROOT_PATH) / data_mode / setting_name / dataset_name / run_folder_name
         )
@@ -110,23 +125,28 @@ class RunManager:
             finally:
                 fcntl.flock(f, fcntl.LOCK_UN)
 
-    def initialize_tasks(self, dataset: List[Dict[str, Any]]):
+    def initialize_tasks(self, dataset: List[Dict[str, Any]]) -> list[Task]:
         """
         Initializes tasks from the provided dataset.
 
         Args:
             dataset (List[Dict[str, Any]]): The dataset containing task information.
         """
+        all_tasks = []
         for i, data in enumerate(dataset):
             if "question_id" not in data:
                 data = {"question_id": i, **data}
-            if data["question_id"] <= 387:
-                continue
-            self.update_final_predictions(data["question_id"])
             task = Task(**data)
-            self.tasks.append(task)
-        self.total_number_of_tasks = len(self.tasks)
-        print(f"Total number of tasks: {self.total_number_of_tasks}")
+            all_tasks.append(task)
+        print(f"Total number of tasks: {len(all_tasks)}")
+
+        # Worker tasks
+        chunk_size = math.ceil(len(all_tasks) / self.args.question_threads)
+        start_id = self.args.worker_id * chunk_size
+        end_id = start_id + chunk_size
+        worker_tasks = all_tasks[start_id:end_id]
+        print(f"Number of tasks for worker {self.args.worker_id}: {len(worker_tasks)}")
+        return worker_tasks
 
     def run_tasks(self):
         """Runs the tasks using a pool of workers."""
@@ -243,7 +263,7 @@ class RunManager:
             SQL_meta_infos={"wisdom_pipeline": [SQLMetaInfo(SQL=post_processed_sql)]},
         )
 
-        evaluation_agent = ExecutionAccuracy()
+        evaluation_agent = ExecutionAccuracy(result_directory=self.result_directory)
         system_state = evaluation_agent(system_state)
 
         return system_state, task.db_id, task.question_id
